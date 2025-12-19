@@ -1,22 +1,3 @@
--- JumpPull — Feature-complete expanded LocalScript
--- Paste into StarterPlayer > StarterPlayerScripts as LocalScript
--- Features:
---  - Pull bind: Hold / Toggle / None (capture via UI)
---  - Bindings Frame: movable, quick capture for binds + settings
---  - AutoJump: ON/OFF, interval, only when on ground
---  - ModeActive: Basic / IdleDelayed / Smart / Advanced (clear behavior)
---  - Multiple force modes: Velocity, VectorForce, LinearVelocity, Impulse
---  - Aim helper: Hold/Toggle/None, FOV, smoothing, wallcheck
---  - Player ESP highlights toggle
---  - Gravity helper: set world gravity while enabled, restore original on off
---  - CS2-style strafe helper, Air control, MaxAirSpeed clamp
---  - Save/Load settings (player attributes JSON)
---  - Robust checks, pcall's, debug prints, concise UI, persistent attributes
---  - Numerous safety checks and comments
---  - Debug mode for verbose output
--- Estimated lines: large (feature-rich, verbose comments)
-
--- services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -27,91 +8,55 @@ local StarterGui = game:GetService("StarterGui")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- ======= CONFIG DEFAULTS =======
+-- ---------- Defaults ----------
 local DEFAULTS = {
-    debug = false,
-
-    -- core mode selection
     mode = "Velocity", -- "Velocity", "VectorForce", "LinearVelocity", "Impulse"
     speed = 90,
     duration = 0.18,
     smoothing = 8,
     rampTime = 0.06,
-
-    -- air control / strafing
     airControl = 0.6,
     strafeStrength = 60,
     cs2Mode = false,
-
-    -- force / impulse
     acceleration = 400,
     maxForce = 1e5,
     impulseStrength = 60,
     maxAirSpeed = 150,
     enableMaxAirSpeed = true,
-
-    -- align (alignposition/orientation settings)
     alignResponsiveness = 50,
     alignMaxForce = 1e5,
+    playerESP = false,
+    gravity = (workspace and workspace.Gravity) or 196.2,
+    gravityHelper = false,
 
-    -- aim helper
+    -- Aim
     aimHelper = false,
     aimTargetPart = "HumanoidRootPart",
     aimStrength = 0.9,
     aimSpeed = 10,
     aimFOV = 90,
-    aimBindMode = "Hold", -- Hold/Toggle/None
+    aimBindMode = "Hold", -- "Hold", "Toggle", "None"
     aimBind = nil,
     aimWallCheck = true,
-    aimWallCheckPadding = 0.1,
 
-    -- pull bind settings
-    pullBindMode = "Hold", -- Hold/Toggle/None
-    pullBind = nil,        -- Enum.KeyCode or nil
+    -- Pull
+    pullBindMode = "Hold", -- "Hold", "Toggle", "None"
+    pullBind = nil,
 
-    -- auto jump
+    -- AutoJump
     autoJump = false,
     autoJumpInterval = 0.18,
 
-    -- modeActive gating
-    modeActive = "Smart", -- Basic / IdleDelayed / Smart / Advanced
+    -- ModeActive
+    modeActive = "Smart", -- "Basic", "IdleDelayed", "Smart", "Advanced"
     idleDelay = 0.5,
     moveThreshold = 0.5,
-
-    -- misc
-    playerESP = false,
-    gravity = (workspace and workspace.Gravity) or 196.2,
-    gravityHelper = false
 }
 
--- runtime settings table (copy of defaults to edit)
 local settings = {}
 for k,v in pairs(DEFAULTS) do settings[k] = v end
 
--- runtime flags
-local enabled = true
-local pullHoldActive = false
-local pullToggleActive = false
-local aimActiveToggle = false
-local autoJumpRunning = false
-local originalGlobalGravity = nil
-local espLoopRunning = false
-local debugMode = settings.debug
-
--- store highlight handles for players
-local highlights = {} -- [userId] = {hl = Highlight, player = Player}
-
--- per-character state
-local charState = {} -- [Character] = {vAttach, vForce, lv, align, ...}
-
--- helper: debug print
-local function dprint(...)
-    if debugMode then
-        print("[JP DEBUG]", ...)
-    end
-end
-
--- helper: safe tonumber and scientific notation parser
+-- ---------- Utilities ----------
 local function parseNumber(s)
     if type(s) == "number" then return s end
     if type(s) ~= "string" then return nil end
@@ -127,225 +72,216 @@ local function parseNumber(s)
     return nil
 end
 
+local function clamp(x, a, b) return math.clamp(x, a, b) end
+
+-- ---------- Runtime flags ----------
+local enabled = true -- main toggle
+local pullHoldActive = false
+local pullToggleActive = false
+local aimToggle = false
+local autoJumpRunning = false
+local espLoopRunning = false
+local originalGlobalGravity = nil
+local lastMoveTime = tick()
+
+local highlights = {} -- userId -> {hl, player}
+local charState = {} -- Character -> state table
+
+-- find owner id (exclude owner from ESP)
+local ownerUserId
+pcall(function()
+    if type(game.CreatorId) == "number" and game.CreatorId > 0 then ownerUserId = game.CreatorId end
+end)
+
+-- ---------- UI ----------
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "JumpPull_UI"
+screenGui.Name = "JumpPullGui"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = playerGui
 
--- root frame
 local root = Instance.new("Frame")
 root.Name = "JP_Root"
 root.Size = UDim2.new(0,420,0,260)
 root.Position = UDim2.new(0,12,0,12)
-root.AnchorPoint = Vector2.new(0,0)
-root.BackgroundColor3 = Color3.fromRGB(30,30,30)
+root.BackgroundColor3 = Color3.fromRGB(28,28,28)
 root.BorderSizePixel = 0
 root.Active = true
 root.Draggable = true
 root.Parent = screenGui
 
 local title = Instance.new("TextLabel", root)
-title.Size = UDim2.new(1, -16, 0, 26)
-title.Position = UDim2.new(0, 8, 0, 8)
+title.Size = UDim2.new(1, -16, 0, 28)
+title.Position = UDim2.new(0,8,0,8)
 title.BackgroundTransparency = 1
-title.Text = "JumpPull — Full"
 title.Font = Enum.Font.SourceSansBold
 title.TextSize = 18
 title.TextColor3 = Color3.fromRGB(240,240,240)
 title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = "JumpPull — Full"
 
--- small status label
-local statusLabel = Instance.new("TextLabel", root)
-statusLabel.Size = UDim2.new(1, -16, 0, 18)
-statusLabel.Position = UDim2.new(0, 8, 0, 36)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Enabled: ON | ModeActive: "..settings.modeActive.." | Mode: "..settings.mode
-statusLabel.Font = Enum.Font.SourceSans
-statusLabel.TextSize = 14
-statusLabel.TextColor3 = Color3.fromRGB(200,200,200)
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+local status = Instance.new("TextLabel", root)
+status.Size = UDim2.new(1,-16,0,16)
+status.Position = UDim2.new(0,8,0,36)
+status.BackgroundTransparency = 1
+status.Font = Enum.Font.SourceSans
+status.TextSize = 14
+status.TextColor3 = Color3.fromRGB(200,200,200)
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.Text = string.format("Enabled: %s | ModeActive: %s | Mode: %s", enabled and "ON" or "OFF", settings.modeActive, settings.mode)
 
--- button factory
 local function makeButton(parent, text, x, y, w)
-    local btn = Instance.new("TextButton", parent)
-    btn.Size = UDim2.new(0, w or 190, 0, 32)
-    btn.Position = UDim2.new(0, x, 0, y)
-    btn.Text = text
-    btn.Font = Enum.Font.SourceSansBold
-    btn.TextSize = 16
-    btn.TextColor3 = Color3.fromRGB(240,240,240)
-    btn.BackgroundColor3 = Color3.fromRGB(60,60,60)
-    return btn
+    local b = Instance.new("TextButton", parent)
+    b.Size = UDim2.new(0, w or 140, 0, 32)
+    b.Position = UDim2.new(0, x, 0, y)
+    b.Font = Enum.Font.SourceSansBold
+    b.TextSize = 16
+    b.Text = text
+    b.BackgroundColor3 = Color3.fromRGB(65,65,65)
+    b.TextColor3 = Color3.fromRGB(240,240,240)
+    return b
 end
 
-local btnToggle = makeButton(root, "Enabled: ON", 8, 64, 120)
-local btnBindings = makeButton(root, "Bindings", 140, 64, 120)
-local btnAutoJump = makeButton(root, "AutoJump: OFF", 272, 64, 140)
-
--- quick info label
+local btnToggle = makeButton(root, "Enabled: ON", 8, 64, 128)
+local btnBindings = makeButton(root, "Bindings", 148, 64, 128)
+local btnAutoJump = makeButton(root, "AutoJump: OFF", 288, 64, 120)
 local infoLabel = Instance.new("TextLabel", root)
-infoLabel.Size = UDim2.new(1, -16, 0, 20)
+infoLabel.Size = UDim2.new(1,-16,0,18)
 infoLabel.Position = UDim2.new(0,8,0,104)
 infoLabel.BackgroundTransparency = 1
-infoLabel.TextColor3 = Color3.fromRGB(200,200,200)
 infoLabel.Font = Enum.Font.SourceSans
 infoLabel.TextSize = 14
-infoLabel.Text = "Bindings closed. Press Bindings to open."
+infoLabel.TextColor3 = Color3.fromRGB(200,200,200)
+infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+infoLabel.Text = "Bindings: closed"
 
--- Mode selection quick button (cycles through main modes)
-local btnMode = makeButton(root, "Mode: "..settings.mode, 8, 128, 200)
-local btnESP = makeButton(root, "PlayerESP: OFF", 220, 128, 190)
+local modeBtn = makeButton(root, "Mode: "..settings.mode, 8, 128, 200)
+local espBtnQuick = makeButton(root, "ESP: OFF", 220, 128, 180)
 
--- quick gravity helper toggle
-local btnGravity = makeButton(root, "GravityHelper: OFF", 8, 168, 200)
+local gravityBtnQuick = makeButton(root, "GravityHelper: OFF", 8, 168, 200)
 
--- Bindings panel (movable)
-local bindPanel = Instance.new("Frame", screenGui)
-bindPanel.Size = UDim2.new(0, 380, 0, 300)
-bindPanel.Position = UDim2.new(0, 12, 0, 280)
-bindPanel.BackgroundColor3 = Color3.fromRGB(26,26,26)
-bindPanel.BorderSizePixel = 0
-bindPanel.Active = true
-bindPanel.Draggable = true
-bindPanel.Visible = false
+-- Bindings Frame
+local bindFrame = Instance.new("Frame")
+bindFrame.Name = "BindingsFrame"
+bindFrame.Size = UDim2.new(0,360,0,300)
+bindFrame.Position = UDim2.new(0,12,0,300)
+bindFrame.BackgroundColor3 = Color3.fromRGB(24,24,24)
+bindFrame.BorderSizePixel = 0
+bindFrame.Active = true
+bindFrame.Draggable = true
+bindFrame.Parent = screenGui
+bindFrame.Visible = false
 
-local bpTitle = Instance.new("TextLabel", bindPanel)
-bpTitle.Size = UDim2.new(1, -16, 0, 22)
-bpTitle.Position = UDim2.new(0, 8, 0, 8)
-bpTitle.BackgroundTransparency = 1
-bpTitle.Font = Enum.Font.SourceSansBold
-bpTitle.Text = "Bindings / Advanced Settings"
-bpTitle.TextColor3 = Color3.fromRGB(230,230,230)
-bpTitle.TextSize = 16
-bpTitle.TextXAlignment = Enum.TextXAlignment.Left
-
--- helper to make rows on bindPanel
-local function bpRow(idx, labelText)
-    local y = 8 + 26 * idx
-    local lbl = Instance.new("TextLabel", bindPanel)
-    lbl.Size = UDim2.new(0.56,0,0,22)
-    lbl.Position = UDim2.new(0,8,0,y)
-    lbl.BackgroundTransparency = 1
-    lbl.Font = Enum.Font.SourceSans
-    lbl.Text = labelText
-    lbl.TextColor3 = Color3.fromRGB(220,220,220)
-    lbl.TextSize = 14
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    return y
+local function bfLabel(txt, y)
+    local l = Instance.new("TextLabel", bindFrame)
+    l.Size = UDim2.new(1,-16,0,22)
+    l.Position = UDim2.new(0,8,0,y)
+    l.BackgroundTransparency = 1
+    l.Font = Enum.Font.SourceSans
+    l.Text = txt
+    l.TextColor3 = Color3.fromRGB(220,220,220)
+    l.TextSize = 14
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    return l
 end
 
--- rows (we'll use indexes)
-bpRow(1, "Pull Bind (click then press key). Esc to clear.")
-local pullBindBtn = Instance.new("TextButton", bindPanel)
-pullBindBtn.Size = UDim2.new(0, 140, 0, 22)
-pullBindBtn.Position = UDim2.new(1, -152, 0, 8+26*1)
+bfLabel("Bindings & Quick Settings", 8)
+
+-- Pull bind row
+bfLabel("Pull Bind (click then press key; Esc to clear)", 40)
+local pullBindBtn = Instance.new("TextButton", bindFrame)
+pullBindBtn.Size = UDim2.new(0,140,0,26)
+pullBindBtn.Position = UDim2.new(1,-152,0,40)
 pullBindBtn.Text = settings.pullBind and settings.pullBind.Name or "Not bound"
 pullBindBtn.Font = Enum.Font.SourceSans
 pullBindBtn.TextSize = 14
-pullBindBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
 
-bpRow(2, "Pull Mode (Hold / Toggle / None)")
-local pullModeBtn = Instance.new("TextButton", bindPanel)
-pullModeBtn.Size = UDim2.new(0, 140, 0, 22)
-pullModeBtn.Position = UDim2.new(1, -152, 0, 8+26*2)
+bfLabel("Pull Mode (Hold / Toggle / None)", 74)
+local pullModeBtn = Instance.new("TextButton", bindFrame)
+pullModeBtn.Size = UDim2.new(0,140,0,26)
+pullModeBtn.Position = UDim2.new(1,-152,0,74)
 pullModeBtn.Text = settings.pullBindMode
 pullModeBtn.Font = Enum.Font.SourceSans
 pullModeBtn.TextSize = 14
-pullModeBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
 
-bpRow(3, "AutoJump ON/OFF (interval)")
-local autoJumpBtn = Instance.new("TextButton", bindPanel)
-autoJumpBtn.Size = UDim2.new(0, 80, 0, 22)
-autoJumpBtn.Position = UDim2.new(1, -236, 0, 8+26*3)
-autoJumpBtn.Text = settings.autoJump and "ON" or "OFF"
-autoJumpBtn.Font = Enum.Font.SourceSans
-autoJumpBtn.TextSize = 14
-autoJumpBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
-
-local autoJumpBox = Instance.new("TextBox", bindPanel)
-autoJumpBox.Size = UDim2.new(0, 60, 0, 22)
-autoJumpBox.Position = UDim2.new(1, -152, 0, 8+26*3)
+-- AutoJump
+bfLabel("AutoJump ON/OFF (interval seconds)", 108)
+local autoJumpToggleBtn = Instance.new("TextButton", bindFrame)
+autoJumpToggleBtn.Size = UDim2.new(0,80,0,26)
+autoJumpToggleBtn.Position = UDim2.new(1,-236,0,108)
+autoJumpToggleBtn.Text = settings.autoJump and "ON" or "OFF"
+autoJumpToggleBtn.Font = Enum.Font.SourceSans
+autoJumpToggleBtn.TextSize = 14
+local autoJumpBox = Instance.new("TextBox", bindFrame)
+autoJumpBox.Size = UDim2.new(0,80,0,26)
+autoJumpBox.Position = UDim2.new(1,-152,0,108)
 autoJumpBox.Text = tostring(settings.autoJumpInterval)
 autoJumpBox.Font = Enum.Font.SourceSans
 autoJumpBox.TextSize = 14
-autoJumpBox.BackgroundColor3 = Color3.fromRGB(36,36,36)
+autoJumpBox.BackgroundColor3 = Color3.fromRGB(32,32,32)
 autoJumpBox.TextColor3 = Color3.fromRGB(230,230,230)
 
-bpRow(4, "ModeActive (Basic / IdleDelayed / Smart / Advanced)")
-local modeActiveBtn = Instance.new("TextButton", bindPanel)
-modeActiveBtn.Size = UDim2.new(0, 140, 0, 22)
-modeActiveBtn.Position = UDim2.new(1, -152, 0, 8+26*4)
+-- ModeActive
+bfLabel("ModeActive (Basic / IdleDelayed / Smart / Advanced)", 142)
+local modeActiveBtn = Instance.new("TextButton", bindFrame)
+modeActiveBtn.Size = UDim2.new(0,140,0,26)
+modeActiveBtn.Position = UDim2.new(1,-152,0,142)
 modeActiveBtn.Text = settings.modeActive
 modeActiveBtn.Font = Enum.Font.SourceSans
 modeActiveBtn.TextSize = 14
-modeActiveBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
 
-bpRow(5, "Aim Helper ON/OFF (FOV / Strength / Bind)")
-local aimHelperBtn = Instance.new("TextButton", bindPanel)
-aimHelperBtn.Size = UDim2.new(0, 80, 0, 22)
-aimHelperBtn.Position = UDim2.new(1, -236, 0, 8+26*5)
+-- Aim helper
+bfLabel("Aim Helper ON/OFF (FOV box)", 176)
+local aimHelperBtn = Instance.new("TextButton", bindFrame)
+aimHelperBtn.Size = UDim2.new(0,80,0,26)
+aimHelperBtn.Position = UDim2.new(1,-236,0,176)
 aimHelperBtn.Text = settings.aimHelper and "ON" or "OFF"
 aimHelperBtn.Font = Enum.Font.SourceSans
 aimHelperBtn.TextSize = 14
-aimHelperBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
-
-local aimFovBox = Instance.new("TextBox", bindPanel)
-aimFovBox.Size = UDim2.new(0, 60, 0, 22)
-aimFovBox.Position = UDim2.new(1, -152, 0, 8+26*5)
+local aimFovBox = Instance.new("TextBox", bindFrame)
+aimFovBox.Size = UDim2.new(0,60,0,26)
+aimFovBox.Position = UDim2.new(1,-152,0,176)
 aimFovBox.Text = tostring(settings.aimFOV)
 aimFovBox.Font = Enum.Font.SourceSans
 aimFovBox.TextSize = 14
-aimFovBox.BackgroundColor3 = Color3.fromRGB(36,36,36)
+aimFovBox.BackgroundColor3 = Color3.fromRGB(32,32,32)
 aimFovBox.TextColor3 = Color3.fromRGB(230,230,230)
 
-bpRow(6, "ESP: highlight players (except owner), On/Off")
-local espBtn = Instance.new("TextButton", bindPanel)
-espBtn.Size = UDim2.new(0, 80, 0, 22)
-espBtn.Position = UDim2.new(1, -236, 0, 8+26*6)
+-- ESP / Gravity quick toggles
+bfLabel("ESP / Gravity helper", 210)
+local espBtn = Instance.new("TextButton", bindFrame)
+espBtn.Size = UDim2.new(0,80,0,26)
+espBtn.Position = UDim2.new(1,-236,0,210)
 espBtn.Text = settings.playerESP and "ON" or "OFF"
 espBtn.Font = Enum.Font.SourceSans
 espBtn.TextSize = 14
-espBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
-
-bpRow(7, "Gravity Helper: set workspace.Gravity when ON")
-local gravityBtn = Instance.new("TextButton", bindPanel)
-gravityBtn.Size = UDim2.new(0, 140, 0, 22)
-gravityBtn.Position = UDim2.new(1, -152, 0, 8+26*7)
+local gravityBtn = Instance.new("TextButton", bindFrame)
+gravityBtn.Size = UDim2.new(0,140,0,26)
+gravityBtn.Position = UDim2.new(1,-152,0,210)
 gravityBtn.Text = settings.gravityHelper and "ON" or "OFF"
 gravityBtn.Font = Enum.Font.SourceSans
 gravityBtn.TextSize = 14
-gravityBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
 
-bpRow(8, "Save / Load settings to Player attributes")
-local saveBtn = Instance.new("TextButton", bindPanel)
-saveBtn.Size = UDim2.new(0, 80, 0, 26)
-saveBtn.Position = UDim2.new(0, 12, 0, 8+26*8)
+-- Save / Load
+local saveBtn = Instance.new("TextButton", bindFrame)
+saveBtn.Size = UDim2.new(0,80,0,28)
+saveBtn.Position = UDim2.new(0,12,0,250)
 saveBtn.Text = "Save"
 saveBtn.Font = Enum.Font.SourceSans
 saveBtn.TextSize = 14
-saveBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
-
-local loadBtn = Instance.new("TextButton", bindPanel)
-loadBtn.Size = UDim2.new(0, 80, 0, 26)
-loadBtn.Position = UDim2.new(0, 100, 0, 8+26*8)
+local loadBtn = Instance.new("TextButton", bindFrame)
+loadBtn.Size = UDim2.new(0,80,0,28)
+loadBtn.Position = UDim2.new(0,110,0,250)
 loadBtn.Text = "Load"
 loadBtn.Font = Enum.Font.SourceSans
 loadBtn.TextSize = 14
-loadBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
 
--- internal helpers for highlight management
-local ownerUserId = nil
-pcall(function()
-    if type(game.CreatorId) == "number" and game.CreatorId > 0 then ownerUserId = game.CreatorId end
-end)
-
+-- ---------- ESP helpers ----------
 local function createHighlightForPlayer(p)
     if not p or p == player then return end
     if ownerUserId and p.UserId == ownerUserId then return end
     local uid = p.UserId
     local rec = highlights[uid]
     if rec and rec.hl and rec.hl.Parent == workspace then
-        -- reattach if needed
         if p.Character then
             pcall(function() rec.hl.Adornee = p.Character end)
         end
@@ -378,11 +314,11 @@ local function removeHighlightForPlayer(p)
     highlights[uid] = nil
 end
 
-local espLoopConn = nil
+local espConn = nil
 local function startESPLoop()
     if espLoopRunning then return end
     espLoopRunning = true
-    espLoopConn = RunService.Heartbeat:Connect(function()
+    espConn = RunService.Heartbeat:Connect(function()
         if settings.playerESP then
             for _,p in ipairs(Players:GetPlayers()) do
                 if p ~= player and (not ownerUserId or p.UserId ~= ownerUserId) then
@@ -403,34 +339,22 @@ local function startESPLoop()
         end
     end)
 end
-
 local function stopESPLoop()
     espLoopRunning = false
-    if espLoopConn then espLoopConn:Disconnect(); espLoopConn = nil end
+    if espConn then espConn:Disconnect(); espConn = nil end
     for uid,rec in pairs(highlights) do
         pcall(function() if rec.hl then rec.hl:Destroy() end end)
     end
     highlights = {}
 end
 
-local function manageESP()
-    if settings.playerESP then
-        startESPLoop()
-    else
-        stopESPLoop()
-    end
-end
-
--- gravity helper toggles workspace gravity but stores original
-local function toggleGravityHelper(val)
-    local v = (val ~= nil) and val or not settings.gravityHelper
-    settings.gravityHelper = v
-    gravityBtn.Text = v and "ON" or "OFF"
-    btnGravity.Text = "GravityHelper: "..(v and "ON" or "OFF")
-    if v then
-        if not originalGlobalGravity then
-            pcall(function() originalGlobalGravity = workspace.Gravity end)
-        end
+-- ---------- Gravity helper ----------
+local function setGravityHelper(on)
+    settings.gravityHelper = (on ~= nil) and on or not settings.gravityHelper
+    gravityBtn.Text = settings.gravityHelper and "ON" or "OFF"
+    gravityBtnQuick.Text = "GravityHelper: "..(settings.gravityHelper and "ON" or "OFF")
+    if settings.gravityHelper then
+        if not originalGlobalGravity then pcall(function() originalGlobalGravity = workspace.Gravity end) end
         pcall(function() workspace.Gravity = tonumber(settings.gravity) or DEFAULTS.gravity end)
     else
         if originalGlobalGravity then
@@ -441,8 +365,7 @@ local function toggleGravityHelper(val)
     player:SetAttribute("JP_GravityHelper", settings.gravityHelper)
 end
 
--- ===== Movement tracking for IdleDelayed & Smart =====
-local lastMoveTime = tick()
+-- ---------- Movement tracking ----------
 local function trackMovement(hrp)
     lastMoveTime = tick()
     local conn
@@ -454,14 +377,7 @@ local function trackMovement(hrp)
     return conn
 end
 
--- ===== Character attach, applyBurst & modes =====
-local function createAttach(hrp)
-    local a = Instance.new("Attachment")
-    a.Name = "_JP_Att"
-    a.Parent = hrp
-    return a
-end
-
+-- ---------- Mode gating ----------
 local function allowedByMode(character)
     local modeActive = settings.modeActive
     if modeActive == "Basic" then return true end
@@ -488,11 +404,19 @@ local function allowedByMode(character)
     return true
 end
 
+-- ---------- applyBurst implementations ----------
+local function createAttach(basePart)
+    local a = Instance.new("Attachment")
+    a.Name = "_JP_Att"
+    a.Parent = basePart
+    return a
+end
+
 local function applyBurst(character)
-    if not character or not allowedByMode(character) or not enabled then return end
+    if not character then return end
+    if not allowedByMode(character) or not enabled then return end
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
-
     local st = charState[character] or {}
     charState[character] = st
     if st._deb then return end
@@ -500,7 +424,7 @@ local function applyBurst(character)
 
     local mode = settings.mode
     if mode == "VectorForce" then
-        -- VectorForce approach
+        -- create VectorForce applied via attachment
         local att = createAttach(hrp)
         local vf = Instance.new("VectorForce")
         vf.Name = "_JP_VectorForce"
@@ -510,22 +434,21 @@ local function applyBurst(character)
         vf.Parent = hrp
 
         local look = hrp.CFrame.LookVector
-        local forward = Vector3.new(look.X,0,look.Z)
+        local forward = Vector3.new(look.X, 0, look.Z)
         if forward.Magnitude == 0 then forward = Vector3.new(0,0,1) end
         forward = forward.Unit
         local desired = forward * (parseNumber(settings.speed) or settings.speed)
-        local curVel = hrp.Velocity
-        local dv = Vector3.new(desired.X - curVel.X, 0, desired.Z - curVel.Z)
+        local cur = hrp.Velocity
+        local dv = Vector3.new(desired.X - cur.X, 0, desired.Z - cur.Z)
         local mass = 1
         pcall(function() mass = hrp:GetMass() end)
         local force = dv * (mass / math.max(0.016, parseNumber(settings.duration) or settings.duration))
-        if force.Magnitude > (parseNumber(settings.maxForce) or settings.maxForce) then
-            force = force.Unit * (parseNumber(settings.maxForce) or settings.maxForce)
-        end
+        local mf = parseNumber(settings.maxForce) or settings.maxForce
+        if force.Magnitude > mf then force = force.Unit * mf end
         vf.Force = force
 
         task.delay(parseNumber(settings.duration) or settings.duration, function()
-            pcall(function() if vf and vf.Parent then vf:Destroy() end end)
+            pcall(function() vf:Destroy() end)
             pcall(function() if att and att.Parent then att:Destroy() end end)
         end)
 
@@ -540,33 +463,38 @@ local function applyBurst(character)
         lv.Parent = hrp
 
         local look = hrp.CFrame.LookVector
-        local forward = Vector3.new(look.X,0,look.Z)
-        if forward.Magnitude==0 then forward = Vector3.new(0,0,1) end
+        local forward = Vector3.new(look.X, 0, look.Z)
+        if forward.Magnitude == 0 then forward = Vector3.new(0,0,1) end
         forward = forward.Unit
         lv.VectorVelocity = forward * (parseNumber(settings.speed) or settings.speed)
 
         task.delay(parseNumber(settings.duration) or settings.duration, function()
-            pcall(function() if lv and lv.Parent then lv:Destroy() end end)
+            pcall(function() lv:Destroy() end)
             pcall(function() if a and a.Parent then a:Destroy() end end)
         end)
+
     elseif mode == "Impulse" then
         local look = hrp.CFrame.LookVector
         local forward = Vector3.new(look.X,0,look.Z)
-        if forward.Magnitude==0 then forward = Vector3.new(0,0,1) end
+        if forward.Magnitude == 0 then forward = Vector3.new(0,0,1) end
         forward = forward.Unit
         local mass = 1
         pcall(function() mass = hrp:GetMass() end)
         local imp = forward * (parseNumber(settings.impulseStrength) or settings.impulseStrength) * mass
         pcall(function() if hrp and hrp:IsA("BasePart") then hrp:ApplyImpulse(imp) end end)
+
     else
-        -- Velocity fallback (instant set)
+        -- Velocity fallback: lerp or set immediate
         local look = hrp.CFrame.LookVector
-        local forward = Vector3.new(look.X,0,look.Z)
+        local forward = Vector3.new(look.X, 0, look.Z)
         if forward.Magnitude == 0 then forward = Vector3.new(0,0,1) end
         forward = forward.Unit
         local desired = forward * (parseNumber(settings.speed) or settings.speed)
         local cur = hrp.Velocity
-        pcall(function() hrp.Velocity = Vector3.new(desired.X, cur.Y, desired.Z) end)
+        -- smoothing via lerp
+        local smooth = parseNumber(settings.smoothing) or settings.smoothing
+        local nv = cur:Lerp(Vector3.new(desired.X, cur.Y, desired.Z), clamp((RunService.Heartbeat and RunService.Heartbeat:Wait() or 1/60) * smooth, 0, 1))
+        pcall(function() hrp.Velocity = Vector3.new(nv.X, cur.Y, nv.Z) end)
     end
 
     task.spawn(function()
@@ -575,7 +503,7 @@ local function applyBurst(character)
     end)
 end
 
--- attach to character: movement tracking and jump hook
+-- ---------- attach to character ----------
 local function attachToCharacter(character)
     if not character then return end
     local humanoid = character:FindFirstChild("Humanoid") or character:WaitForChild("Humanoid", 2)
@@ -590,7 +518,7 @@ local function attachToCharacter(character)
     if st._jumpConn then st._jumpConn:Disconnect() end
     st._jumpConn = humanoid.Jumping:Connect(function(active)
         if active and enabled then
-            -- allow one advanced trigger: Advanced mode requires explicit trigger
+            -- Allow advanced single-use if advanced gating used
             st._allowAdvanced = true
             applyBurst(character)
         end
@@ -607,7 +535,7 @@ end
 player.CharacterAdded:Connect(function(ch) task.wait(0.05); attachToCharacter(ch) end)
 if player.Character then task.spawn(function() task.wait(0.05); attachToCharacter(player.Character) end) end
 
--- Pull runner: handles toggle/hold timing and safety
+-- ---------- Pull runner (toggle/hold) ----------
 task.spawn(function()
     while true do
         if pullToggleActive and enabled then
@@ -624,13 +552,13 @@ task.spawn(function()
     end
 end)
 
-
+-- ---------- AutoJump ----------
 local autoJumpThread = nil
 local function startAutoJump()
     if autoJumpRunning then return end
     autoJumpRunning = true
     settings.autoJump = true
-    autoJumpBtn.Text = "ON"
+    autoJumpToggleBtn.Text = "ON"
     btnAutoJump.Text = "AutoJump: ON"
     autoJumpBox.Text = tostring(settings.autoJumpInterval)
     autoJumpThread = task.spawn(function()
@@ -638,7 +566,6 @@ local function startAutoJump()
             local ch = player.Character
             local humanoid = ch and ch:FindFirstChild("Humanoid")
             if humanoid and humanoid.Health > 0 then
-                -- only jump when on floor (not in air)
                 if humanoid.FloorMaterial ~= Enum.Material.Air then
                     humanoid.Jump = true
                 end
@@ -652,11 +579,10 @@ end
 local function stopAutoJump()
     autoJumpRunning = false
     settings.autoJump = false
-    autoJumpBtn.Text = "OFF"
+    autoJumpToggleBtn.Text = "OFF"
     btnAutoJump.Text = "AutoJump: OFF"
 end
 
--- ===== Aim helper (simple target picker + camera lerp) =====
 local cameraRef = workspace.CurrentCamera
 local aimConn = nil
 
@@ -721,16 +647,15 @@ local function pickTarget()
     local cam = getCamera()
     if not cam then return nil end
     for _,entry in ipairs(cand) do
-        local p = entry.player
         local part = entry.part
         local ang = angleToTarget(part.Position)
         if ang <= (settings.aimFOV or 180) then
             local dist = (part.Position - cam.CFrame.Position).Magnitude
             if settings.aimWallCheck and not wallCheck(part) then
-                -- ignore behind wall
+                -- skip
             else
                 local score = ang + dist * 0.01
-                if score < bestScore then best = p; bestScore = score; bestPart = part end
+                if score < bestScore then best = entry.player; bestScore = score; bestPart = part end
             end
         end
     end
@@ -746,7 +671,7 @@ local function startAimLoop()
         local aimShouldRun = false
         if settings.aimBindMode == "None" then aimShouldRun = settings.aimHelper
         elseif settings.aimBindMode == "Hold" then if settings.aimBind then aimShouldRun = UserInputService:IsKeyDown(settings.aimBind) end
-        elseif settings.aimBindMode == "Toggle" then aimShouldRun = aimActiveToggle end
+        elseif settings.aimBindMode == "Toggle" then aimShouldRun = aimToggle end
         if not aimShouldRun then return end
         local targetPlayer, targetPart = pickTarget()
         if not targetPlayer or not targetPart then return end
@@ -768,7 +693,7 @@ local function stopAimLoop()
     if aimConn then aimConn:Disconnect(); aimConn = nil end
 end
 
--- aim monitor (start/stop based on settings)
+-- keep aim loop running only when enabled in settings
 task.spawn(function()
     while true do
         if settings.aimHelper then startAimLoop() else stopAimLoop() end
@@ -776,13 +701,12 @@ task.spawn(function()
     end
 end)
 
--- ===== Bind capture logic (for pull & aim) =====
+-- ---------- Bind capture (pull/aim) ----------
 local waitingForPullBind = false
 local waitingForAimBind = false
 local captureConn = nil
 
-local function captureKeyFor(which)
-    -- which == "pull" or "aim"
+local function captureBind(which)
     if which == "pull" then
         if waitingForPullBind then return end
         waitingForPullBind = true
@@ -797,10 +721,10 @@ local function captureKeyFor(which)
             if inp.KeyCode == Enum.KeyCode.Escape then settings.pullBind = nil
             else settings.pullBind = inp.KeyCode end
             pullBindBtn.Text = settings.pullBind and settings.pullBind.Name or "Not bound"
-            infoLabel.Text = "Pull bind updated"
+            infoLabel.Text = "Pull bind set: "..(settings.pullBind and settings.pullBind.Name or "none")
             if captureConn then captureConn:Disconnect(); captureConn = nil end
         end)
-    else
+    elseif which == "aim" then
         if waitingForAimBind then return end
         waitingForAimBind = true
         infoLabel.Text = "Press key for Aim bind (Esc to clear)"
@@ -813,28 +737,26 @@ local function captureKeyFor(which)
             waitingForAimBind = false
             if inp.KeyCode == Enum.KeyCode.Escape then settings.aimBind = nil
             else settings.aimBind = inp.KeyCode end
-            -- (aim bind UI not displayed individually, but saved)
-            infoLabel.Text = "Aim bind updated"
+            infoLabel.Text = "Aim bind set: "..(settings.aimBind and settings.aimBind.Name or "none")
             if captureConn then captureConn:Disconnect(); captureConn = nil end
         end)
     end
 end
 
--- ===== Bind Input handling (global) =====
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    -- main toggle (T)
+-- ---------- Global input handling ----------
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
     if input.KeyCode == Enum.KeyCode.T then
         enabled = not enabled
         btnToggle.Text = enabled and "Enabled: ON" or "Enabled: OFF"
-        statusLabel.Text = "Enabled: "..(enabled and "ON" or "OFF").." | ModeActive: "..settings.modeActive.." | Mode: "..settings.mode
+        status.Text = string.format("Enabled: %s | ModeActive: %s | Mode: %s", enabled and "ON" or "OFF", settings.modeActive, settings.mode)
         return
     end
-    -- aim toggle or hold
+
     if settings.aimBind and input.KeyCode == settings.aimBind then
-        if settings.aimBindMode == "Toggle" then aimActiveToggle = not aimActiveToggle end
+        if settings.aimBindMode == "Toggle" then aimToggle = not aimToggle end
     end
-    -- pull bind handling
+
     if settings.pullBind and input.KeyCode == settings.pullBind then
         if settings.pullBindMode == "Toggle" then
             pullToggleActive = not pullToggleActive
@@ -850,76 +772,66 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
-UserInputService.InputEnded:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
+UserInputService.InputEnded:Connect(function(input, gp)
+    if gp then return end
     if settings.pullBind and input.KeyCode == settings.pullBind and settings.pullBindMode == "Hold" then
         pullHoldActive = false
     end
 end)
 
--- ===== UI interactions hookups =====
+-- ---------- UI hooks ----------
 btnToggle.MouseButton1Click:Connect(function()
     enabled = not enabled
     btnToggle.Text = enabled and "Enabled: ON" or "Enabled: OFF"
-    statusLabel.Text = "Enabled: "..(enabled and "ON" or "OFF").." | ModeActive: "..settings.modeActive.." | Mode: "..settings.mode
+    status.Text = string.format("Enabled: %s | ModeActive: %s | Mode: %s", enabled and "ON" or "OFF", settings.modeActive, settings.mode)
 end)
 
 btnBindings.MouseButton1Click:Connect(function()
-    bindPanel.Visible = not bindPanel.Visible
-    infoLabel.Text = bindPanel.Visible and "Bindings open" or "Bindings closed"
+    bindFrame.Visible = not bindFrame.Visible
+    infoLabel.Text = bindFrame.Visible and "Bindings: open" or "Bindings: closed"
 end)
 
 btnAutoJump.MouseButton1Click:Connect(function()
-    if settings.autoJump then
-        stopAutoJump()
-    else
-        startAutoJump()
-    end
-    autoJumpBtn.Text = settings.autoJump and "ON" or "OFF"
+    if settings.autoJump then stopAutoJump() else startAutoJump() end
 end)
 
--- mode quick change
-btnMode.MouseButton1Click:Connect(function()
-    local MODES = {"Velocity", "VectorForce", "LinearVelocity", "Impulse"}
+modeBtn.MouseButton1Click:Connect(function()
+    local MODES = {"Velocity","VectorForce","LinearVelocity","Impulse"}
     local idx = 1
     for i,v in ipairs(MODES) do if v == settings.mode then idx = i; break end end
-    local next = (idx % #MODES) + 1
-    settings.mode = MODES[next]
-    btnMode.Text = "Mode: "..settings.mode
-    statusLabel.Text = "Enabled: "..(enabled and "ON" or "OFF").." | ModeActive: "..settings.modeActive.." | Mode: "..settings.mode
+    local nextIdx = (idx % #MODES) + 1
+    settings.mode = MODES[nextIdx]
+    modeBtn.Text = "Mode: "..settings.mode
+    status.Text = string.format("Enabled: %s | ModeActive: %s | Mode: %s", enabled and "ON" or "OFF", settings.modeActive, settings.mode)
 end)
 
-btnESP.MouseButton1Click:Connect(function()
+espBtnQuick.MouseButton1Click:Connect(function()
     settings.playerESP = not settings.playerESP
+    espBtnQuick.Text = "ESP: "..(settings.playerESP and "ON" or "OFF")
     espBtn.Text = settings.playerESP and "ON" or "OFF"
-    btnESP.Text = "PlayerESP: "..(settings.playerESP and "ON" or "OFF")
-    manageESP()
+    if settings.playerESP then startESPLoop() else stopESPLoop() end
 end)
 
-btnGravity.MouseButton1Click:Connect(function()
-    toggleGravityHelper()
+gravityBtnQuick.MouseButton1Click:Connect(function()
+    setGravityHelper(not settings.gravityHelper)
 end)
 
--- Bind panel handlers
-pullBindBtn.MouseButton1Click:Connect(function() captureKeyFor("pull") end)
+pullBindBtn.MouseButton1Click:Connect(function() captureBind("pull") end)
 pullModeBtn.MouseButton1Click:Connect(function()
     if settings.pullBindMode == "Hold" then settings.pullBindMode = "Toggle"
     elseif settings.pullBindMode == "Toggle" then settings.pullBindMode = "None"
     else settings.pullBindMode = "Hold" end
     pullModeBtn.Text = settings.pullBindMode
-    infoLabel.Text = "Pull mode set to "..settings.pullBindMode
+    infoLabel.Text = "Pull mode: "..settings.pullBindMode
 end)
 
-autoJumpBtn.MouseButton1Click:Connect(function()
+autoJumpToggleBtn.MouseButton1Click:Connect(function()
     if settings.autoJump then stopAutoJump() else startAutoJump() end
-    autoJumpBtn.Text = settings.autoJump and "ON" or "OFF"
-    infoLabel.Text = "AutoJump "..(settings.autoJump and "enabled" or "disabled")
+    autoJumpToggleBtn.Text = settings.autoJump and "ON" or "OFF"
 end)
-
 autoJumpBox.FocusLost:Connect(function()
     local n = parseNumber(autoJumpBox.Text)
-    if n and n > 0 then settings.autoJumpInterval = n; autoJumpBox.Text = tostring(n)
-    else autoJumpBox.Text = tostring(settings.autoJumpInterval) end
+    if n and n > 0 then settings.autoJumpInterval = n; autoJumpBox.Text = tostring(n) else autoJumpBox.Text = tostring(settings.autoJumpInterval) end
 end)
 
 modeActiveBtn.MouseButton1Click:Connect(function()
@@ -928,84 +840,88 @@ modeActiveBtn.MouseButton1Click:Connect(function()
     elseif settings.modeActive == "Smart" then settings.modeActive = "Advanced"
     else settings.modeActive = "Basic" end
     modeActiveBtn.Text = settings.modeActive
-    statusLabel.Text = "Enabled: "..(enabled and "ON" or "OFF").." | ModeActive: "..settings.modeActive.." | Mode: "..settings.mode
+    status.Text = string.format("Enabled: %s | ModeActive: %s | Mode: %s", enabled and "ON" or "OFF", settings.modeActive, settings.mode)
     infoLabel.Text = "ModeActive -> "..settings.modeActive
 end)
 
 aimHelperBtn.MouseButton1Click:Connect(function()
     settings.aimHelper = not settings.aimHelper
     aimHelperBtn.Text = settings.aimHelper and "ON" or "OFF"
-    infoLabel.Text = "Aim helper "..(settings.aimHelper and "enabled" or "disabled")
+    infoLabel.Text = "AimHelper -> "..(settings.aimHelper and "ON" or "OFF")
 end)
 
 aimFovBox.FocusLost:Connect(function()
     local n = parseNumber(aimFovBox.Text)
-    if n and n > 0 then settings.aimFOV = n; aimFovBox.Text = tostring(n)
-    else aimFovBox.Text = tostring(settings.aimFOV) end
+    if n and n > 0 then settings.aimFOV = n; aimFovBox.Text = tostring(n) else aimFovBox.Text = tostring(settings.aimFOV) end
 end)
 
 espBtn.MouseButton1Click:Connect(function()
     settings.playerESP = not settings.playerESP
     espBtn.Text = settings.playerESP and "ON" or "OFF"
-    btnESP.Text = "PlayerESP: "..(settings.playerESP and "ON" or "OFF")
-    manageESP()
+    espBtnQuick.Text = "ESP: "..(settings.playerESP and "ON" or "OFF")
+    if settings.playerESP then startESPLoop() else stopESPLoop() end
 end)
 
 gravityBtn.MouseButton1Click:Connect(function()
-    toggleGravityHelper()
+    setGravityHelper(not settings.gravityHelper)
 end)
 
 saveBtn.MouseButton1Click:Connect(function()
-    local ok, err = pcall(function()
+    local ok,err = pcall(function()
         player:SetAttribute("JP_Settings", HttpService:JSONEncode(settings))
     end)
-    if ok then infoLabel.Text = "Settings saved." else infoLabel.Text = "Save failed: "..tostring(err) end
+    infoLabel.Text = ok and "Saved settings" or ("Save failed: "..tostring(err))
 end)
 
 loadBtn.MouseButton1Click:Connect(function()
     local enc = player:GetAttribute("JP_Settings")
-    if not enc then infoLabel.Text = "No saved settings." return end
+    if not enc then infoLabel.Text = "No saved settings"; return end
     local ok, dec = pcall(function() return HttpService:JSONDecode(enc) end)
-    if not ok or type(dec) ~= "table" then infoLabel.Text = "Load failed (invalid)." return end
+    if not ok or type(dec) ~= "table" then infoLabel.Text = "Load failed (invalid)"; return end
     for k,v in pairs(dec) do settings[k] = v end
-    -- update UI
+    -- update UI state
     pullBindBtn.Text = settings.pullBind and settings.pullBind.Name or "Not bound"
     pullModeBtn.Text = settings.pullBindMode
+    autoJumpToggleBtn.Text = settings.autoJump and "ON" or "OFF"
     autoJumpBox.Text = tostring(settings.autoJumpInterval)
-    autoJumpBtn.Text = settings.autoJump and "ON" or "OFF"
     modeActiveBtn.Text = settings.modeActive
     aimHelperBtn.Text = settings.aimHelper and "ON" or "OFF"
     aimFovBox.Text = tostring(settings.aimFOV)
     espBtn.Text = settings.playerESP and "ON" or "OFF"
     gravityBtn.Text = settings.gravityHelper and "ON" or "OFF"
-    btnMode.Text = "Mode: "..settings.mode
-    statusLabel.Text = "Enabled: "..(enabled and "ON" or "OFF").." | ModeActive: "..settings.modeActive.." | Mode: "..settings.mode
+    modeBtn.Text = "Mode: "..settings.mode
+    btnAutoJump.Text = "AutoJump: "..(settings.autoJump and "ON" or "OFF")
+    btnToggle.Text = enabled and "Enabled: ON" or "Enabled: OFF"
     infoLabel.Text = "Settings loaded"
-    manageESP()
-    if settings.gravityHelper then toggleGravityHelper(true) end
+    if settings.playerESP then startESPLoop() else stopESPLoop() end
+    if settings.gravityHelper then setGravityHelper(true) end
 end)
 
+-- ---------- Player events for ESP housekeeping ----------
+Players.PlayerRemoving:Connect(function(p) removeHighlightForPlayer(p) end)
 
-pullBindBtn.Text = settings.pullBind and settings.pullBind.Name or "Not bound"
-pullModeBtn.Text = settings.pullBindMode
-autoJumpBtn.Text = settings.autoJump and "ON" or "OFF"
-modeActiveBtn.Text = settings.modeActive
-aimHelperBtn.Text = settings.aimHelper and "ON" or "OFF"
-aimFovBox.Text = tostring(settings.aimFOV)
-espBtn.Text = settings.playerESP and "ON" or "OFF"
-gravityBtn.Text = settings.gravityHelper and "ON" or "OFF"
-btnMode.Text = "Mode: "..settings.mode
-btnAutoJump.Text = "AutoJump: "..(settings.autoJump and "ON" or "OFF")
+Players.PlayerAdded:Connect(function(p)
+    p.CharacterAdded:Connect(function(ch)
+        task.delay(0.05, function()
+            if settings.playerESP and p ~= player and (not ownerUserId or p.UserId ~= ownerUserId) then
+                createHighlightForPlayer(p)
+                local rec = highlights[p.UserId]
+                if rec and rec.hl then pcall(function() rec.hl.Adornee = ch end) end
+            end
+        end)
+    end)
+    p.CharacterRemoving:Connect(function()
+        local rec = highlights[p.UserId]
+        if rec and rec.hl then pcall(function() rec.hl.Adornee = nil end) end
+    end)
+end)
 
--- cleanup on GUI destroy
+-- ---------- Cleanup on gui destroy ----------
 screenGui.AncestryChanged:Connect(function(_, parent)
     if not parent then
-        -- clean up highlights, connections, restore gravity
         stopESPLoop()
-        toggleGravityHelper(false)
+        setGravityHelper(false)
         stopAimLoop()
     end
 end)
 
--- final notice
-print("[JumpPull] Feature-complete script loaded. Use Bindings panel to configure. Toggle main enabled with T.")
